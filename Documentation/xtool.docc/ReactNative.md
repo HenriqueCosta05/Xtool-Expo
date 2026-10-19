@@ -49,6 +49,17 @@ XTOOL_METRO_HOST=192.168.1.20 xtool dev
 
 > Important: On WSL 2 the default NAT network isn't reachable from your phone. Enable [mirrored networking mode](https://learn.microsoft.com/en-us/windows/wsl/networking#mirrored-mode-networking) so that WSL shares your PC's IP address, and allow port 8081 through the Windows firewall.
 
+### Expo on Linux (beta)
+
+Some of Expo's native tooling only ships for macOS, so on Linux xtool builds it from your `node_modules` the first time you build an Expo app:
+
+- `expo-modules-macros`: compiled for Linux, replacing the macOS binary inside `node_modules` (the original is kept as `ExpoModulesMacros.darwin`). This takes a few minutes.
+- `expo-modules-jsi`: built as a framework with the iOS SDK when the installed version doesn't ship one.
+
+Both are reused on later builds. Reinstalling `node_modules` triggers the first one again.
+
+> Warning: Build-time script phases declared by Expo modules (for example `expo-constants` embedding your app config) are not run yet.
+
 ### Release builds
 
 Release builds embed the JavaScript bundle and assets in the app, so they run without Metro:
