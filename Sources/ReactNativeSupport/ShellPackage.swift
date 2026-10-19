@@ -41,8 +41,11 @@ struct ShellPackage: Sendable {
                         \(frameworkDependencies.joined(separator: "\n                "))
                     ],
                     path: "App",
-                    swiftSettings: [.define("DEBUG", .when(configuration: .debug))],
-                    linkerSettings: [.unsafeFlags(["-ObjC"])]
+                    swiftSettings: [
+                        .define("DEBUG", .when(configuration: .debug)),
+                        .enableUpcomingFeature("InternalImportsByDefault"),
+                    ],
+                    linkerSettings: [.unsafeFlags(["-Xlinker", "-ObjC"])]
                 ),
                 \(binaryTargets.joined(separator: "\n        "))
             ],
