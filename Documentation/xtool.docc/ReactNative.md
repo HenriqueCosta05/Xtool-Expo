@@ -54,9 +54,18 @@ XTOOL_METRO_HOST=192.168.1.20 xtool dev
 Some of Expo's native tooling only ships for macOS, so on Linux xtool builds it from your `node_modules` the first time you build an Expo app:
 
 - `expo-modules-macros`: compiled for Linux, replacing the macOS binary inside `node_modules` (the original is kept as `ExpoModulesMacros.darwin`). This takes a few minutes.
-- `expo-modules-jsi`: built as a framework with the iOS SDK when the installed version doesn't ship one.
+- `expo-modules-jsi`: built as a framework with the iOS SDK when the installed version doesn't ship one, and linked into the app (Expo normally builds it in an Xcode build phase).
+- Expo modules that mix Swift and Objective-C, declare an `spm.config.json`, and aren't published prebuilt (for example `@expo/ui`, `expo-audio`, `expo-application`): each one is built into the Debug and Release XCFrameworks that Expo's Swift Package Manager integration expects, under `xtool/rn/expo-precompiled`, which xtool passes as `EXPO_PRECOMPILED_MODULES_PATH`. Modules that ship only Swift sources or their own `Package.swift` are built from source as usual.
 
-Both are reused on later builds. Reinstalling `node_modules` triggers the first one again.
+All of these are reused on later builds and rebuilt when the module, or the Expo modules it depends on, change version. Reinstalling `node_modules` triggers the macro build again.
+
+Because these frameworks come from `EXPO_PRECOMPILED_MODULES_PATH` while `ExpoModulesCore` comes from npm, Expo prints a `WARNING` about mixing precompiled modules from different places. It's expected: xtool builds them against the exact `ExpoModulesCore` in your `node_modules`.
+
+Modules that mix languages but declare neither an `spm.config.json` nor a `Package.swift` (such as `expo-dev-launcher` and `expo-dev-menu`, which `expo-dev-client` pulls in) can't be built with Swift Package Manager. Exclude them from iOS autolinking in your `package.json`:
+
+```json
+"expo": { "autolinking": { "ios": { "exclude": ["expo-dev-client", "expo-dev-launcher", "expo-dev-menu"] } } }
+```
 
 > Warning: Build-time script phases declared by Expo modules (for example `expo-constants` embedding your app config) are not run yet.
 
