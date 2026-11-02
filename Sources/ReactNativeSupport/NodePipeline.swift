@@ -10,12 +10,23 @@ struct NodePipeline: Sendable {
 
     var bundleDirectory: URL { appRoot.appendingPathComponent("build/bundle") }
 
+    private var setupScript: URL {
+        projectRoot.appendingPathComponent("node_modules/react-native/scripts/setup-apple-spm.js")
+    }
+
     func generatePackages() async throws {
-        let environment = try await toolEnvironment()
+        var environment = try await toolEnvironment()
+        #if !os(macOS)
+        if isExpo {
+            try await Shell.run(["node", setupScript.path, "download"], in: appRoot, environment: environment)
+            environment = try await ExpoLinuxSupport(projectRoot: projectRoot, appRoot: appRoot)
+                .prepare(environment: environment)
+        }
+        #endif
+
         let configFile = try await writeAutolinkingConfig(environment: environment)
         let configCommand = String(decoding: try JSONEncoder().encode(["cat", configFile.path]), as: UTF8.self)
-        let setupScript = projectRoot.appendingPathComponent("node_modules/react-native/scripts/setup-apple-spm.js")
-        try await run(
+        try await Shell.run(
             ["node", setupScript.path, "update", "--yes", "--config-command", configCommand],
             in: appRoot,
             environment: environment
@@ -35,7 +46,7 @@ struct NodePipeline: Sendable {
             let bundler = isExpo
                 ? ["npx", "expo", "export:embed"]
                 : ["npx", "react-native", "bundle", "--entry-file", "index.js"]
-            try await run(bundler + [
+            try await Shell.run(bundler + [
                 "--platform", "ios",
                 "--dev", "false",
                 "--bundle-output", bundleDirectory.appendingPathComponent("main.jsbundle").path,
@@ -51,7 +62,7 @@ struct NodePipeline: Sendable {
         let command = isExpo
             ? ["npx", "expo-modules-autolinking", "react-native-config", "--json", "--platform", "ios"]
             : ["npx", "@react-native-community/cli", "config"]
-        let output = try await capture(command, in: projectRoot, environment: environment)
+        let output = try await Shell.capture(command, in: projectRoot, environment: environment)
 
         guard var config = try JSONSerialization.jsonObject(with: output) as? [String: Any] else {
             throw StringError("Unexpected output from `\(command.joined(separator: " "))`")
@@ -77,7 +88,7 @@ struct NodePipeline: Sendable {
 
         try FileManager.default.createSymbolicLink(
             at: shims.appendingPathComponent("otool"),
-            withDestinationURL: try await toolchainBinary("llvm-objdump")
+            withDestinationURL: try await Shell.hostToolchain().appendingPathComponent("bin/llvm-objdump")
         )
 
         let plutil = shims.appendingPathComponent("plutil")
@@ -95,18 +106,6 @@ struct NodePipeline: Sendable {
         #endif
     }
 
-    private func toolchainBinary(_ name: String) async throws -> URL {
-        let info = try await capture(["swiftc", "-print-target-info"], in: appRoot)
-        let paths = (try JSONSerialization.jsonObject(with: info) as? [String: Any])?["paths"] as? [String: Any]
-        guard let resourcePath = paths?["runtimeResourcePath"] as? String else {
-            throw StringError("Could not locate the Swift toolchain")
-        }
-        return URL(fileURLWithPath: resourcePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("bin/\(name)")
-    }
-
     private func metroHost() async throws -> String {
         if let host = ProcessInfo.processInfo.environment["XTOOL_METRO_HOST"] {
             return host
@@ -116,35 +115,10 @@ struct NodePipeline: Sendable {
         #else
         let command = ["hostname", "-I"]
         #endif
-        let output = String(decoding: try await capture(command, in: appRoot), as: UTF8.self)
+        let output = String(decoding: try await Shell.capture(command, in: appRoot), as: UTF8.self)
         guard let host = output.split(whereSeparator: \.isWhitespace).first else {
             throw StringError("Could not determine this machine's IP address. Set XTOOL_METRO_HOST.")
         }
         return String(host)
-    }
-
-    private func run(_ command: [String], in directory: URL, environment: Environment = .inherit) async throws {
-        try await Subprocess.run(
-            .name(command[0]),
-            arguments: .init(Array(command.dropFirst())),
-            environment: environment,
-            workingDirectory: FilePath(directory.path),
-            output: .currentStandardOutput,
-            error: .currentStandardError,
-        )
-        .checkSuccess()
-    }
-
-    private func capture(_ command: [String], in directory: URL, environment: Environment = .inherit) async throws -> Data {
-        let result = try await Subprocess.run(
-            .name(command[0]),
-            arguments: .init(Array(command.dropFirst())),
-            environment: environment,
-            workingDirectory: FilePath(directory.path),
-            output: .data(limit: .max),
-            error: .currentStandardError,
-        )
-        .checkSuccess()
-        return result.standardOutput
     }
 }

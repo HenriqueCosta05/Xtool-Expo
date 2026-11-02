@@ -74,6 +74,15 @@ public struct ReactNativeProject: Sendable {
             sources[framework.frameworkName] = sources[framework.frameworkName] ?? URL(fileURLWithPath: path)
         }
 
+        // Expo builds ExpoModulesJSI in an Xcode build phase rather than declaring it to SwiftPM,
+        // so link the copy ExpoLinuxSupport built.
+        let jsi = ExpoPrebuild.artifactDirectory(
+            in: appRoot.appendingPathComponent("expo-precompiled"), packageName: "expo-modules-jsi", flavor: flavor
+        ).appendingPathComponent("ExpoModulesJSI.xcframework")
+        if isExpo, sources["ExpoModulesJSI"] == nil, FileManager.default.fileExists(atPath: jsi.path) {
+            sources["ExpoModulesJSI"] = jsi
+        }
+
         let frameworksDir = appRoot.appendingPathComponent("Frameworks", isDirectory: true)
         try? FileManager.default.removeItem(at: frameworksDir)
         try FileManager.default.createDirectory(at: frameworksDir, withIntermediateDirectories: true)
