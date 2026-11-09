@@ -16,12 +16,28 @@ In addition to the steps in <doc:Installation-Linux>, install [Node.js](https://
 npm install
 ```
 
-Optionally add an `xtool.yml` to the root of your project to set the bundle ID. The same keys as for SwiftPM apps apply, except `product` and `extensions`.
+Optionally add an `xtool.yml` to the root of your project to set the bundle ID. The same keys as for SwiftPM apps apply, except `product`.
 
 ```yaml
 version: 1
 bundleID: com.example.myapp
 ```
+
+### App extensions
+
+Declare app extensions (widgets, share extensions, and so on) under `extensions` as for SwiftPM apps. Since a React Native project has no `Package.swift`, xtool builds each extension from the Swift, Objective-C, and C sources in `targets/<product>`, or in the directory set by `sources`:
+
+```yaml
+extensions:
+  - product: Widget
+    infoPath: targets/Widget/Info.plist
+    entitlementsPath: targets/Widget/Widget.entitlements
+  - product: Share
+    sources: native/share
+    infoPath: native/share/Info.plist
+```
+
+Other files in that directory, such as `Info.plist` or entitlements, are ignored unless `xtool.yml` points to them. Extensions can use system frameworks, but not React Native or Swift package dependencies.
 
 ## Build and run
 
@@ -48,6 +64,14 @@ XTOOL_METRO_HOST=192.168.1.20 xtool dev
 ```
 
 > Important: On WSL 2 the default NAT network isn't reachable from your phone. Enable [mirrored networking mode](https://learn.microsoft.com/en-us/windows/wsl/networking#mirrored-mode-networking) so that WSL shares your PC's IP address, and allow port 8081 through the Windows firewall.
+
+To run a Debug build without Metro, embed the JavaScript bundle in the app instead:
+
+```bash
+xtool dev --embed-bundle
+```
+
+The bundle is built in development mode, so warnings and LogBox still show, but changes to your JavaScript need a rebuild.
 
 ### Expo on Linux (beta)
 

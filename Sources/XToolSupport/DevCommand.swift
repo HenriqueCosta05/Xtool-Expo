@@ -14,6 +14,13 @@ struct PackOperation {
             help: "Build with configuration"
         ) var configuration: BuildConfiguration = .debug
 
+        @Flag(
+            help: ArgumentHelp(
+                "React Native: embed the JavaScript bundle in Debug builds",
+                discussion: "The app then runs without the Metro dev server. Release builds always embed it."
+            )
+        ) var embedBundle = false
+
         init() {}
 
         init(configuration: BuildConfiguration) {
@@ -32,7 +39,10 @@ struct PackOperation {
         // TODO: support running inside a child directory
 
         if let reactNative = try ReactNativeProject(directory: URL(fileURLWithPath: ".")) {
-            let packageDir = try await reactNative.prepare(configuration: buildOptions.configuration)
+            let packageDir = try await reactNative.prepare(
+                configuration: buildOptions.configuration,
+                embedBundle: buildOptions.embedBundle
+            )
             guard FileManager.default.changeCurrentDirectoryPath(packageDir.path) else {
                 throw Console.Error("Could not enter \(packageDir.path)")
             }

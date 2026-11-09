@@ -33,22 +33,24 @@ struct NodePipeline: Sendable {
         )
     }
 
-    func prepareBundle(configuration: BuildConfiguration) async throws -> [String] {
+    /// Writes what the app needs to load its JavaScript into `build/bundle`: either the Metro host
+    /// (Debug), or the bundle and its assets (Release, or Debug with `embed`).
+    func prepareBundle(configuration: BuildConfiguration, embed: Bool) async throws -> [String] {
         try? FileManager.default.removeItem(at: bundleDirectory)
         try FileManager.default.createDirectory(at: bundleDirectory, withIntermediateDirectories: true)
 
-        switch configuration {
-        case .debug:
+        if configuration == .debug && !embed {
             let host = try await metroHost()
             print("Metro host: \(host) (override with XTOOL_METRO_HOST)")
             try Data("\(host)\n".utf8).write(to: bundleDirectory.appendingPathComponent("ip.txt"))
-        case .release:
+        } else {
             let bundler = isExpo
                 ? ["npx", "expo", "export:embed"]
                 : ["npx", "react-native", "bundle", "--entry-file", "index.js"]
+            print("Bundling JavaScript...")
             try await Shell.run(bundler + [
                 "--platform", "ios",
-                "--dev", "false",
+                "--dev", configuration == .debug ? "true" : "false",
                 "--bundle-output", bundleDirectory.appendingPathComponent("main.jsbundle").path,
                 "--assets-dest", bundleDirectory.path,
             ], in: projectRoot)

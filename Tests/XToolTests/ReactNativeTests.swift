@@ -166,3 +166,69 @@ private let mixedConfig = #"""
     let artifacts = ExpoPrebuild.artifactDirectory(in: URL(fileURLWithPath: "/p"), packageName: "@expo/ui", flavor: "debug")
     #expect(artifacts.path == "/p/@expo/ui/output/debug/xcframeworks")
 }
+
+@Test func shellManifestDeclaresExtensions() {
+    let package = ShellPackage(
+        productName: "Demo", moduleName: "main", isExpo: true, frameworks: ["React"], extensions: ["Widget"]
+    )
+    let manifest = package.manifest
+    #expect(manifest.contains(#".library(name: "Widget", targets: ["Widget"]),"#))
+    #expect(manifest.contains(#"path: "Extensions/Widget","#))
+}
+
+@Test func appDelegateCanEmbedBundleInDebug() {
+    let metro = ShellPackage(productName: "Demo", moduleName: "main", isExpo: true, frameworks: []).appDelegate
+    #expect(metro.contains("RCTBundleURLProvider"))
+
+    let embedded = ShellPackage(
+        productName: "Demo", moduleName: "main", isExpo: true, frameworks: [], embedBundle: true
+    ).appDelegate
+    #expect(!embedded.contains("RCTBundleURLProvider"))
+    #expect(!embedded.contains("#if DEBUG"))
+    #expect(embedded.contains(#"Bundle.main.url(forResource: "main", withExtension: "jsbundle")"#))
+}
+
+@Test func readsExtensionSourcesFromConfig() throws {
+    let dir = try makeProject(files: [
+        "xtool.yml": """
+        version: 1
+        orgID: com.example
+        extensions:
+          - product: Widget
+            infoPath: targets/Widget/Info.plist
+          - product: Share
+            infoPath: share/Info.plist
+            sources: share
+        """,
+    ])
+    defer { try? FileManager.default.removeItem(at: dir) }
+
+    #expect(throws: (any Error).self) { try UserConfig(projectRoot: dir).extensionSources(productName: "Demo") }
+
+    for path in ["targets/Widget/Nested", "share"] {
+        try FileManager.default.createDirectory(at: dir.appendingPathComponent(path), withIntermediateDirectories: true)
+    }
+    let config = try UserConfig(projectRoot: dir)
+    let sources = try config.extensionSources(productName: "Demo")
+    #expect(sources.map(\.name) == ["Widget", "Share"])
+    #expect(sources.map(\.sources.lastPathComponent) == ["Widget", "share"])
+    #expect(config.schema.extensions?.map(\.product) == ["Widget", "Share"])
+
+    #expect(throws: (any Error).self) { try config.extensionSources(productName: "Widget") }
+}
+
+@Test func mirrorsOnlySourceFiles() throws {
+    let source = try makeProject(files: ["Widget.swift": "", "Info.plist": "", "Widget.entitlements": ""])
+    let nested = source.appendingPathComponent("Views")
+    try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+    try Data().write(to: nested.appendingPathComponent("View.swift"))
+    let destination = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer {
+        try? FileManager.default.removeItem(at: source)
+        try? FileManager.default.removeItem(at: destination)
+    }
+
+    try ReactNativeProject.mirrorSources(of: source, into: destination)
+    #expect(try FileManager.default.contentsOfDirectory(atPath: destination.path).sorted() == ["Views", "Widget.swift"])
+    #expect(FileManager.default.fileExists(atPath: destination.appendingPathComponent("Views/View.swift").path))
+}

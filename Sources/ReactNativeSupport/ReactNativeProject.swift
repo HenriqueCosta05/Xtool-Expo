@@ -31,7 +31,11 @@ public struct ReactNativeProject: Sendable {
         return name.first?.isLetter == true ? name : "App"
     }
 
-    public func prepare(configuration: BuildConfiguration) async throws -> URL {
+    /// Prepares the shell Swift package in `xtool/rn` and returns its directory.
+    ///
+    /// - Parameter embedBundle: Embed the JavaScript bundle in Debug builds too, so the app
+    ///   runs without the Metro dev server. Release builds always embed it.
+    public func prepare(configuration: BuildConfiguration, embedBundle: Bool = false) async throws -> URL {
         let setupScript = root.appendingPathComponent("node_modules/react-native/scripts/setup-apple-spm.js")
         guard FileManager.default.fileExists(atPath: setupScript.path) else {
             throw StringError("""
@@ -40,22 +44,27 @@ public struct ReactNativeProject: Sendable {
             """)
         }
 
+        let config = try UserConfig(projectRoot: root)
+        let extensions = try config.extensionSources(productName: productName)
+
         print("Preparing React Native project...")
         try FileManager.default.createDirectory(at: appRoot, withIntermediateDirectories: true)
         try write(ShellPackage.stubProject, to: "App.xcodeproj/project.pbxproj")
 
         let pipeline = NodePipeline(projectRoot: root, appRoot: appRoot, isExpo: isExpo)
         try await pipeline.generatePackages()
-        let bundleResources = try await pipeline.prepareBundle(configuration: configuration)
+        let bundleResources = try await pipeline.prepareBundle(configuration: configuration, embed: embedBundle)
 
         let package = ShellPackage(
             productName: productName,
             moduleName: isExpo ? "main" : appName,
             isExpo: isExpo,
-            frameworks: try linkFrameworks(flavor: configuration.rawValue)
+            frameworks: try linkFrameworks(flavor: configuration.rawValue),
+            extensions: extensions.map(\.name),
+            embedBundle: embedBundle
         )
-        try writeSources(of: package)
-        try writeSchema(resources: bundleResources)
+        try writeSources(of: package, extensions: extensions)
+        try writeSchema(config.schema, resources: bundleResources)
         return appRoot
     }
 
@@ -95,7 +104,7 @@ public struct ReactNativeProject: Sendable {
         return sources.keys.sorted()
     }
 
-    private func writeSources(of package: ShellPackage) throws {
+    private func writeSources(of package: ShellPackage, extensions: [ExtensionSource]) throws {
         let sourcesDir = appRoot.appendingPathComponent("App", isDirectory: true)
         try? FileManager.default.removeItem(at: sourcesDir)
         try FileManager.default.createDirectory(at: sourcesDir, withIntermediateDirectories: true)
@@ -111,25 +120,49 @@ public struct ReactNativeProject: Sendable {
                 withDestinationURL: url
             )
         }
+
+        let extensionsDir = appRoot.appendingPathComponent("Extensions", isDirectory: true)
+        try? FileManager.default.removeItem(at: extensionsDir)
+        for ext in extensions {
+            try Self.mirrorSources(of: ext.sources, into: extensionsDir.appendingPathComponent(ext.name))
+        }
     }
 
-    private func writeSchema(resources: [String]) throws {
-        let userConfig = root.appendingPathComponent("xtool.yml")
-        var schema: PackSchemaBase
-        if let data = FileManager.default.contents(atPath: userConfig.path) {
-            schema = try YAMLDecoder().decode(PackSchemaBase.self, from: data)
-        } else {
-            print("warning: Could not locate 'xtool.yml'. Using default configuration with 'com.example' organization ID.")
-            schema = try YAMLDecoder().decode(PackSchemaBase.self, from: "version: 1\norgID: com.example")
+    /// SwiftPM targets must live inside the package, so recreate the directory tree under it with
+    /// each source file symlinked to the original. Other files (Info.plist, entitlements, assets)
+    /// are left out: they're configured in `xtool.yml`, and SwiftPM would warn about them.
+    static func mirrorSources(of source: URL, into destination: URL) throws {
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
+        for name in try fileManager.contentsOfDirectory(atPath: source.path) where !name.hasPrefix(".") {
+            let item = source.appendingPathComponent(name)
+            var isDirectory: ObjCBool = false
+            guard fileManager.fileExists(atPath: item.path, isDirectory: &isDirectory) else { continue }
+            if isDirectory.boolValue {
+                try mirrorSources(of: item, into: destination.appendingPathComponent(name))
+            } else if sourceExtensions.contains(item.pathExtension) {
+                try fileManager.createSymbolicLink(at: destination.appendingPathComponent(name), withDestinationURL: item)
+            }
         }
+    }
 
+    private static let sourceExtensions: Set<String> = ["swift", "h", "hpp", "m", "mm", "c", "cc", "cpp", "modulemap"]
+
+    private func writeSchema(_ userSchema: PackSchemaBase, resources: [String]) throws {
+        var schema = userSchema
         let absolute = { (path: String) in Self.absolute(path, in: root) }
         schema.product = productName
         schema.infoPath = try writeInfoPlist(merging: schema.infoPath.map(absolute))
         schema.iconPath = schema.iconPath.map(absolute)
         schema.entitlementsPath = schema.entitlementsPath.map(absolute)
         schema.resources = (schema.resources ?? []).map(absolute) + resources
-        schema.extensions = nil
+        schema.extensions = schema.extensions?.map { ext in
+            var ext = ext
+            ext.infoPath = absolute(ext.infoPath)
+            ext.entitlementsPath = ext.entitlementsPath.map(absolute)
+            ext.resources = ext.resources?.map(absolute)
+            return ext
+        }
         schema.skipLSP = true
 
         try write(try YAMLEncoder().encode(schema), to: "xtool.yml")
@@ -160,6 +193,66 @@ public struct ReactNativeProject: Sendable {
     private func decode<T: Decodable>(_ type: T.Type, from url: URL) throws -> T? {
         guard let data = FileManager.default.contents(atPath: url.path) else { return nil }
         return try JSONDecoder().decode(type, from: data)
+    }
+}
+
+struct ExtensionSource {
+    var name: String
+    var sources: URL
+}
+
+/// The project's `xtool.yml`, plus the keys only React Native projects use.
+struct UserConfig {
+    /// React Native projects have no Package.swift to declare extension targets in,
+    /// so each extension also says where its sources are.
+    private struct Overlay: Decodable {
+        struct Extension: Decodable {
+            var product: String
+            var sources: String?
+        }
+
+        var extensions: [Extension]?
+    }
+
+    var schema: PackSchemaBase
+    private var overlay: Overlay
+    private var projectRoot: URL
+
+    init(projectRoot: URL) throws {
+        self.projectRoot = projectRoot
+        let url = projectRoot.appendingPathComponent("xtool.yml")
+        if let data = FileManager.default.contents(atPath: url.path) {
+            schema = try YAMLDecoder().decode(PackSchemaBase.self, from: data)
+            overlay = try YAMLDecoder().decode(Overlay.self, from: data)
+        } else {
+            print("warning: Could not locate 'xtool.yml'. Using default configuration with 'com.example' organization ID.")
+            schema = try YAMLDecoder().decode(PackSchemaBase.self, from: "version: 1\norgID: com.example")
+            overlay = Overlay()
+        }
+    }
+
+    func extensionSources(productName: String) throws -> [ExtensionSource] {
+        var seen: Set<String> = [productName]
+        return try (overlay.extensions ?? []).map { ext in
+            guard ext.product.first?.isLetter == true,
+                  ext.product.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_") })
+            else {
+                throw StringError("xtool.yml: Extension product '\(ext.product)' must be a valid Swift module name.")
+            }
+            guard seen.insert(ext.product).inserted else {
+                throw StringError("xtool.yml: Extension product '\(ext.product)' clashes with another product.")
+            }
+            let path = ext.sources ?? "targets/\(ext.product)"
+            let url = URL(fileURLWithPath: ReactNativeProject.absolute(path, in: projectRoot))
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+                throw StringError("""
+                xtool.yml: Could not find the sources of extension '\(ext.product)' at '\(path)'. \
+                Create that directory, or set 'sources' on the extension.
+                """)
+            }
+            return ExtensionSource(name: ext.product, sources: url.standardizedFileURL)
+        }
     }
 }
 

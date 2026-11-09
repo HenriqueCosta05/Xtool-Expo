@@ -7,11 +7,27 @@ struct ShellPackage: Sendable {
     var moduleName: String
     var isExpo: Bool
     var frameworks: [String]
+    /// App extension targets, built from the sources mirrored into `Extensions/<name>`.
+    var extensions: [String] = []
+    /// Load the JavaScript bundle embedded in the app even in Debug builds, instead of from Metro.
+    var embedBundle = false
 
     var manifest: String {
         let frameworkDependencies = frameworks.map { "\"\($0)\"," }
         let binaryTargets = frameworks.map {
             ".binaryTarget(name: \"\($0)\", path: \"Frameworks/\($0).xcframework\"),"
+        }
+        let extensionProducts = extensions.map {
+            ".library(name: \"\($0)\", targets: [\"\($0)\"]),"
+        }
+        let extensionTargets = extensions.map {
+            """
+            .target(
+                    name: "\($0)",
+                    path: "Extensions/\($0)",
+                    swiftSettings: [.define("DEBUG", .when(configuration: .debug))]
+                ),
+            """
         }
         return """
         // swift-tools-version: 6.0
@@ -22,6 +38,7 @@ struct ShellPackage: Sendable {
             platforms: [.iOS("\(Self.deploymentTarget)")],
             products: [
                 .library(name: "\(productName)", targets: ["\(productName)"]),
+                \(extensionProducts.joined(separator: "\n        "))
             ],
             dependencies: [
                 .package(name: "ReactNative", path: "build/xcframeworks"),
@@ -48,6 +65,7 @@ struct ShellPackage: Sendable {
                     linkerSettings: [.unsafeFlags(["-Xlinker", "-ObjC"])]
                 ),
                 \(binaryTargets.joined(separator: "\n        "))
+                \(extensionTargets.joined(separator: "\n        "))
             ],
             swiftLanguageModes: [.v5],
             cxxLanguageStandard: .cxx20
@@ -90,14 +108,22 @@ struct ShellPackage: Sendable {
             }
 
             override func bundleURL() -> URL? {
-                #if DEBUG
-                RCTBundleURLProvider.sharedSettings().jsBundleURL(forBundleRoot: "\(flavor.bundleRoot)")
-                #else
-                Bundle.main.url(forResource: "main", withExtension: "jsbundle")
-                #endif
+                \(bundleURLBody(flavor: flavor))
             }
         }
 
+        """
+    }
+
+    private func bundleURLBody(flavor: AppDelegateFlavor) -> String {
+        let embedded = "Bundle.main.url(forResource: \"main\", withExtension: \"jsbundle\")"
+        if embedBundle { return embedded }
+        return """
+        #if DEBUG
+                RCTBundleURLProvider.sharedSettings().jsBundleURL(forBundleRoot: "\(flavor.bundleRoot)")
+                #else
+                \(embedded)
+                #endif
         """
     }
 
