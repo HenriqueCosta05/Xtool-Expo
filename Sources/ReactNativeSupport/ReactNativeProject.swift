@@ -45,7 +45,8 @@ public struct ReactNativeProject: Sendable {
         }
 
         let config = try UserConfig(projectRoot: root)
-        let extensions = try config.extensionSources(productName: productName)
+        let appSources = try config.appSources()
+        let extensions = try config.extensionSources(productName: productName, appSources: appSources)
 
         print("Preparing React Native project...")
         try FileManager.default.createDirectory(at: appRoot, withIntermediateDirectories: true)
@@ -63,7 +64,7 @@ public struct ReactNativeProject: Sendable {
             extensions: extensions.map(\.name),
             embedBundle: embedBundle
         )
-        try writeSources(of: package, extensions: extensions)
+        try writeSources(of: package, appSources: appSources, extensions: extensions)
         try writeSchema(config.schema, resources: bundleResources)
         return appRoot
     }
@@ -104,7 +105,7 @@ public struct ReactNativeProject: Sendable {
         return sources.keys.sorted()
     }
 
-    private func writeSources(of package: ShellPackage, extensions: [ExtensionSource]) throws {
+    private func writeSources(of package: ShellPackage, appSources: URL?, extensions: [ExtensionSource]) throws {
         let sourcesDir = appRoot.appendingPathComponent("App", isDirectory: true)
         try? FileManager.default.removeItem(at: sourcesDir)
         try FileManager.default.createDirectory(at: sourcesDir, withIntermediateDirectories: true)
@@ -119,6 +120,10 @@ public struct ReactNativeProject: Sendable {
                 at: sourcesDir.appendingPathComponent(url.lastPathComponent),
                 withDestinationURL: url
             )
+        }
+
+        if let appSources {
+            try Self.mirrorSources(of: appSources, into: sourcesDir)
         }
 
         let extensionsDir = appRoot.appendingPathComponent("Extensions", isDirectory: true)
@@ -141,7 +146,13 @@ public struct ReactNativeProject: Sendable {
             if isDirectory.boolValue {
                 try mirrorSources(of: item, into: destination.appendingPathComponent(name))
             } else if sourceExtensions.contains(item.pathExtension) {
-                try fileManager.createSymbolicLink(at: destination.appendingPathComponent(name), withDestinationURL: item)
+                let link = destination.appendingPathComponent(name)
+                guard !fileManager.fileExists(atPath: link.path) else {
+                    throw StringError("""
+                    '\(item.path)' clashes with a file that xtool generates (such as AppDelegate.swift). Rename it.
+                    """)
+                }
+                try fileManager.createSymbolicLink(at: link, withDestinationURL: item)
             }
         }
     }
@@ -211,8 +222,12 @@ struct UserConfig {
             var sources: String?
         }
 
+        /// Native sources compiled into the app itself, next to the generated AppDelegate.
+        var sources: String?
         var extensions: [Extension]?
     }
+
+    static let defaultAppSources = "targets/App"
 
     var schema: PackSchemaBase
     private var overlay: Overlay
@@ -231,7 +246,22 @@ struct UserConfig {
         }
     }
 
-    func extensionSources(productName: String) throws -> [ExtensionSource] {
+    /// The directory of native sources to add to the app target, if any. It's optional,
+    /// unless `xtool.yml` names one explicitly.
+    func appSources() throws -> URL? {
+        let path = overlay.sources ?? Self.defaultAppSources
+        let url = URL(fileURLWithPath: ReactNativeProject.absolute(path, in: projectRoot)).standardizedFileURL
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue {
+            return url
+        }
+        guard overlay.sources == nil else {
+            throw StringError("xtool.yml: Could not find the app's native sources at '\(path)'.")
+        }
+        return nil
+    }
+
+    func extensionSources(productName: String, appSources: URL? = nil) throws -> [ExtensionSource] {
         var seen: Set<String> = [productName]
         return try (overlay.extensions ?? []).map { ext in
             guard ext.product.first?.isLetter == true,
@@ -250,6 +280,9 @@ struct UserConfig {
                 xtool.yml: Could not find the sources of extension '\(ext.product)' at '\(path)'. \
                 Create that directory, or set 'sources' on the extension.
                 """)
+            }
+            guard url.standardizedFileURL != appSources else {
+                throw StringError("xtool.yml: Extension '\(ext.product)' can't use the app's own sources directory '\(path)'.")
             }
             return ExtensionSource(name: ext.product, sources: url.standardizedFileURL)
         }

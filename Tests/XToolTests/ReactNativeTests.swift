@@ -232,3 +232,50 @@ private let mixedConfig = #"""
     #expect(try FileManager.default.contentsOfDirectory(atPath: destination.path).sorted() == ["Views", "Widget.swift"])
     #expect(FileManager.default.fileExists(atPath: destination.appendingPathComponent("Views/View.swift").path))
 }
+
+@Test func readsAppSourcesFromConfig() throws {
+    let dir = try makeProject(files: ["xtool.yml": "version: 1\norgID: com.example\n"])
+    defer { try? FileManager.default.removeItem(at: dir) }
+
+    // optional by default
+    #expect(try UserConfig(projectRoot: dir).appSources() == nil)
+
+    let appDir = dir.appendingPathComponent("targets/App")
+    try FileManager.default.createDirectory(at: appDir, withIntermediateDirectories: true)
+    #expect(try UserConfig(projectRoot: dir).appSources()?.path == appDir.standardizedFileURL.path)
+
+    // required once named explicitly
+    try Data("version: 1\norgID: com.example\nsources: native\n".utf8).write(to: dir.appendingPathComponent("xtool.yml"))
+    #expect(throws: (any Error).self) { try UserConfig(projectRoot: dir).appSources() }
+    try FileManager.default.createDirectory(at: dir.appendingPathComponent("native"), withIntermediateDirectories: true)
+    #expect(try UserConfig(projectRoot: dir).appSources()?.lastPathComponent == "native")
+}
+
+@Test func extensionsCantShareAppSources() throws {
+    let dir = try makeProject(files: [
+        "xtool.yml": """
+        version: 1
+        orgID: com.example
+        extensions:
+          - product: App
+            infoPath: Info.plist
+        """,
+    ])
+    defer { try? FileManager.default.removeItem(at: dir) }
+    try FileManager.default.createDirectory(at: dir.appendingPathComponent("targets/App"), withIntermediateDirectories: true)
+
+    let config = try UserConfig(projectRoot: dir)
+    #expect(throws: (any Error).self) {
+        try config.extensionSources(productName: "Demo", appSources: config.appSources())
+    }
+}
+
+@Test func mirroringRejectsGeneratedFileNames() throws {
+    let source = try makeProject(files: ["AppDelegate.swift": "", "Intents.swift": ""])
+    let destination = try makeProject(files: ["AppDelegate.swift": ""])
+    defer {
+        try? FileManager.default.removeItem(at: source)
+        try? FileManager.default.removeItem(at: destination)
+    }
+    #expect(throws: (any Error).self) { try ReactNativeProject.mirrorSources(of: source, into: destination) }
+}

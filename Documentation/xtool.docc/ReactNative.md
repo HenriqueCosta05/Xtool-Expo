@@ -23,6 +23,16 @@ version: 1
 bundleID: com.example.myapp
 ```
 
+### Native code in the app
+
+To compile your own Swift or Objective-C into the app itself, for example <doc:AppIntents> for Siri and Shortcuts, put the files in `targets/App`, or in the directory set by `sources` in `xtool.yml`:
+
+```yaml
+sources: native/app
+```
+
+They're built into the same module as the `AppDelegate` that xtool generates, so don't name a file `AppDelegate.swift`. As with extensions, only source files are used, and the app can't depend on Swift packages from there.
+
 ### App extensions
 
 Declare app extensions (widgets, share extensions, and so on) under `extensions` as for SwiftPM apps. Since a React Native project has no `Package.swift`, xtool builds each extension from the Swift, Objective-C, and C sources in `targets/<product>`, or in the directory set by `sources`:
