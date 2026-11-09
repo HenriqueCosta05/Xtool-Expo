@@ -97,8 +97,7 @@ public struct Packer: Sendable {
         case .swiftPM:
             binPath = "\(buildSettings.triple)/\(buildSettings.configuration.rawValue)"
         case .swiftBuild:
-            let platformName = buildSettings.triple.contains("simulator") ? "iphonesimulator" : "iphoneos"
-            binPath = "out/Products/\(buildSettings.configuration.swiftBuildValue)-\(platformName)"
+            binPath = "out/Products/\(swiftBuildConfigurationDir)"
         }
         let binDir = URL(
             fileURLWithPath: ".build/\(binPath)",
@@ -126,6 +125,8 @@ public struct Packer: Sendable {
                 }
             }
         }
+
+        try writeAppIntentsMetadata(into: outputURL)
 
         let dest = URL(fileURLWithPath: "xtool").appendingPathComponent(outputURL.lastPathComponent)
         try? FileManager.default.removeItem(at: dest)
@@ -216,6 +217,53 @@ public struct Packer: Sendable {
             )
             try encodedPlist.write(to: infoPath)
         }
+    }
+
+    private var swiftBuildConfigurationDir: String {
+        let platformName = buildSettings.triple.contains("simulator") ? "iphonesimulator" : "iphoneos"
+        return "\(buildSettings.configuration.swiftBuildValue)-\(platformName)"
+    }
+
+    /// Writes the App Intents metadata of each product. Xcode's `appintentsmetadataprocessor`
+    /// only runs on macOS, so derive it from the compiler's `.swiftconstvalues` instead.
+    private func writeAppIntentsMetadata(into app: URL) throws {
+        // only Swift Build emits const values
+        guard buildSettings.buildSystem == .swiftBuild else { return }
+        let files = constValueFiles()
+        guard !files.isEmpty else { return }
+
+        let toolsVersion = Self.xcodeBuildVersion()
+        for product in plan.allProducts {
+            let metadata = try AppIntentsMetadata(
+                constValueFiles: files,
+                modules: Set(product.modules),
+                toolsVersion: toolsVersion
+            )
+            for warning in metadata.warnings {
+                print("warning: App Intents: \(warning)")
+            }
+            guard !metadata.isEmpty else { continue }
+            try metadata.write(into: product.directory(inApp: app))
+        }
+    }
+
+    private func constValueFiles() -> [URL] {
+        let intermediates = URL(fileURLWithPath: ".build/out/Intermediates.noindex", isDirectory: true)
+        guard let enumerator = FileManager.default.enumerator(at: intermediates, includingPropertiesForKeys: nil)
+        else { return [] }
+        let configurationDir = "/\(swiftBuildConfigurationDir)/"
+        return enumerator.compactMap { $0 as? URL }.filter {
+            $0.pathExtension == "swiftconstvalues" && $0.path.contains(configurationDir)
+        }
+    }
+
+    /// The build of Xcode that the Darwin SDK comes from, e.g. `17C529`.
+    private static func xcodeBuildVersion() -> String? {
+        guard let sdk = try? DarwinSDK.current(),
+              let data = try? Data(contentsOf: sdk.bundle.appendingPathComponent("Xcode.app/Contents/version.plist")),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+        else { return nil }
+        return plist["ProductBuildVersion"] as? String
     }
 
     static func cfBundleSupportedPlatforms(for triple: String) -> [String] {
